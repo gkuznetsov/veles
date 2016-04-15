@@ -46,7 +46,8 @@ from zope.interface import implementer
 from veles import prng, __root__
 from veles.compat import from_none
 
-from veles.config import root
+from veles.accelerated_units import AcceleratedWorkflow
+from veles.config import root, fix_contents
 from veles.distributable import IDistributable
 from veles.genetics.config import process_config, Range, print_config, \
     ConfigChromosome, ConfigPopulation
@@ -58,7 +59,6 @@ from veles.plotting_units import AccumulatingPlotter
 from veles.plumbing import Repeater
 from veles.result_provider import IResultProvider
 from veles.units import IUnit, UnitCommandLineArgumentsRegistry, Unit
-from veles.workflow import Workflow
 
 
 class EvaluationError(Exception):
@@ -161,6 +161,13 @@ class GeneticsOptimizer(Unit):
         self.info("Best snapshot: %s", self.best.snapshot)
         self.info("Best configuration")
         print_config(self.best.config)
+        path_to_the_best_config = "%s_best_config.py" % self._model_.__name__
+        with open(path_to_the_best_config, "w") as fout:
+            fout.write(
+                "from veles.config import root\n\n\nroot.update(%s)" %
+                fix_contents(self.best.config))
+        self.info(
+            "Best configuration was saved to %s" % path_to_the_best_config)
 
     def get_metric_names(self):
         return {"Fitness", "Best configuration", "Generation"}
@@ -226,7 +233,8 @@ class GeneticsOptimizer(Unit):
                     suffix=".%d.pickle" % best_protocol) as fres:
                 argv = ["--result-file", fres.name, "--stealth", "--log-id",
                         self.launcher.log_id] + self._filtered_argv_ + \
-                    ["root.common.disable.publishing=True"]
+                    ["root.common.disable.snapshotting=True",
+                     "root.common.disable.publishing=True"]
                 if self.plotters_are_disabled:
                     argv = ["-p", ""] + argv
                 i = -1
@@ -287,7 +295,7 @@ class GeneticsOptimizer(Unit):
         self._chromosome_index = self.size - 1
 
 
-class OptimizationWorkflow(Workflow):
+class OptimizationWorkflow(AcceleratedWorkflow):
     KWATTRS = set(GeneticsOptimizer.KWATTRS)
 
     def __init__(self, workflow, **kwargs):

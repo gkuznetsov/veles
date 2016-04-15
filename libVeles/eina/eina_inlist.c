@@ -25,10 +25,10 @@
 
 #include <stdio.h>
 
-#include "inc/veles/eina_config.h"
+#include "eina_config.h"
 #include "eina_private.h"
 #include "eina_error.h"
-#include "inc/veles/eina_log.h"
+#include "eina_log.h"
 
 /* undefs EINA_ARG_NONULL() so NULL checks are not compiled out! */
 #include "eina_safety_checks.h"
@@ -529,10 +529,13 @@ _eina_inlist_sorted_state_insert(Eina_Inlist_Sorted_State *state,
      start = 0;
 
    last = state->jump_table[start];
+   assert(last);
    start++;
 
    /* Correctly rebuild end of list */
-   for (jump_count = 0; last->next != NULL; last = last->next, jump_count++)
+   for (jump_count = 0;
+        last && last->next != NULL;
+        last = last->next, jump_count++)
      {
         if (jump_count == state->jump_div)
           {
@@ -803,6 +806,7 @@ eina_inlist_sorted_state_insert(Eina_Inlist *list,
         ct = eina_inlist_prepend_relative(list, item, ct);
      }
 
+   assert(state->jump_div > 0);
    head = cur / state->jump_div;
    offset = cur % state->jump_div;
 

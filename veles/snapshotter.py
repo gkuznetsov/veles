@@ -236,12 +236,14 @@ class SnapshotterBase(Unit):
     @staticmethod
     def _import_fobj(fobj):
         try:
-            return pickle.load(fobj)
+            obj = pickle.load(fobj)
         except ImportError as e:
             logging.getLogger("Snapshotter").error(
                 "Are you trying to import snapshot belonging to a different "
                 "workflow?")
             raise from_none(e)
+        obj._restored_from_snapshot_ = True
+        return obj
 
 
 class SnappyFile(object):
@@ -414,6 +416,7 @@ class SnapshotterToFile(SnapshotterBase):
         _, ext = os.path.splitext(file_name)
         codec = SnapshotterToFile.READ_CODECS[ext[1:]]
         with codec(file_name) as fin:
+            logging.getLogger("Snapshotter").info("Reading %s...", file_name)
             return SnapshotterToFile._import_fobj(fin)
 
     def _open_file(self):
@@ -498,6 +501,7 @@ class SnapshotterToDB(SnapshotterBase):
             query += " and name = '%s'" % name
         else:
             query += " order by timestamp desc limit 1"
+        logging.getLogger("Snapshotter").info("Executing \"%s\"...", query)
         cursor.execute(query)
         row = cursor.fetchone()
         codec = SnapshotterToDB.READ_CODECS[row.codec]

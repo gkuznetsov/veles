@@ -7,7 +7,14 @@ Repositories
 Veles Debian repository
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-Add Smaug repository to your /etc/apt/sources.list: ``deb https://velesnet.ml/apt trusty main``
+Add Smaug repository to your /etc/apt/sources.list::
+
+    sudo nano /etc/apt/sources.list
+
+Add below line to the end of file::
+
+    deb https://velesnet.ml/apt trusty main
+
 On newer Ubuntu, replace trusty with your distribution code name.
 
 If Smaug is not accessible from your point, there are two options left: either
@@ -22,6 +29,8 @@ Add the repository public key::
 ^^^^^^^^^^^
 Proxy setup
 ^^^^^^^^^^^
+
+This step is necessary **only if you use a proxy server** to connect to the internet.
 
 If your apt uses a proxy server to connect to the internet (this is what we have
 in Samsung headquaters), you must add the exclusion for ``velesnet.ml`` to
@@ -70,7 +79,7 @@ Restart the proxy server::
 Setting up a local mirror
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
-This step is needed only if velesnet.ml is inaccessible from your site.
+This step is needed **only if velesnet.ml is inaccessible** from your site.
 The easiest way to build a mirror is to install and use `aptly <http://www.aptly.info>`_.
 Besides, you must obtain the  \*.deb files belonging to the repository from some other source,
 e.g. via email or file sharing though 3-rd party. Execute and  carefully read the output::
@@ -81,13 +90,3 @@ e.g. via email or file sharing though 3-rd party. Execute and  carefully read th
     aptly serve
 
 Replace "trusty" with the proper distribution codename (see ``lsb_release -c``).
-
-^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Upgrading existing packages
-^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-Ensure that your current packages are up to date::
-
-    sudo apt-get update
-    sudo apt-get upgrade
-

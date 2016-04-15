@@ -43,6 +43,24 @@ if [ ! -e "$mypath/zlib/configure" ]; then
 else
     git submodule update libVeles/zlib
 fi
+
+if [ ! -e "$mypath/simd/configure.ac" ]; then
+    git submodule update --init	libVeles/simd
+else
+    git submodule update libVeles/simd
+fi
+
+if [ ! -e "$mypath/variant/variant.hpp" ]; then
+    git submodule update --init	libVeles/variant
+else
+    git submodule update libVeles/variant
+fi
+
+if [ ! -e "$mypath/rapidjson/CMakeLists.txt" ]; then
+    git submodule update --init	libVeles/rapidjson
+else
+    git submodule update libVeles/rapidjson
+fi
 cd $mypath
 
 echo "CFLAGS=\"-I$mypath/zlib -DHAVE_LIBZ=1\" \
@@ -116,6 +134,10 @@ fi
 
 cd libarchive
 build/autogen.sh
+cd ../simd
+./autogen.sh
+echo "\$(dirname \$0)/configure \$@ --disable-simd-fftf --disable-tests --disable-doxygen" > configure.gnu
+chmod +x configure.gnu
 cd ..
 
 if [ -n "$1" ]; then

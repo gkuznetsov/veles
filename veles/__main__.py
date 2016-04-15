@@ -59,6 +59,13 @@ from email.utils import formatdate
 import errno
 import gc
 import logging
+try:
+    # Fixes late numba ImportError conflict with veles.prng
+    import numba  # pylint: disable=W0611
+    if not __unittest:
+        del sys.modules["unittest"]
+except ImportError:
+    pass
 import os
 import resource
 import runpy
@@ -595,8 +602,8 @@ class Main(Logger, CommandLineBase):
             sys.exit(Main.EXIT_FAILURE)
         try:
             self.workflow = self._load_workflow(self.snapshot_file_name)
-            self.snapshot = self.workflow is not None
-            if not self.snapshot:
+            snapshot = self.workflow is not None
+            if not snapshot:
                 wfkw = self._get_interactive_locals()
                 wfkw.update(kwargs)
                 self.workflow = Workflow(self.launcher, **wfkw)
@@ -615,7 +622,7 @@ class Main(Logger, CommandLineBase):
             self.workflow.generate_graph(filename=self._workflow_graph,
                                          with_data_links=True,
                                          background='white')
-        return self.workflow, self.snapshot
+        return self.workflow, snapshot
 
     def _main(self, **kwargs):
         if self._dry_run < 2:
@@ -626,7 +633,6 @@ class Main(Logger, CommandLineBase):
             self.critical("Call load() first in run()")
             sys.exit(Main.EXIT_FAILURE)
         self.main_called = True
-        kwargs["snapshot"] = self.snapshot
         kwargs["no_device"] = not self.regular
 
         try:

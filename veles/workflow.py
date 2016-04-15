@@ -34,25 +34,30 @@ under the License.
 ███████████████████████████████████████████████████████████████████████████████
 """
 
-
+from codecs import getwriter
 from collections import OrderedDict, defaultdict
+from itertools import chain
 import datetime
 import hashlib
 import inspect
-from itertools import chain
 import json
 import logging
+import weakref
+import numpy
 import os
 import six
 import sys
+import tarfile
 import tempfile
-import time
 import threading
+import time
+import zipfile
 from zope.interface import implementer
 
 from veles.compat import from_none, FileExistsError
 from veles.config import root
 from veles.distributable import IDistributable
+from veles.error import VelesException
 from veles.mutable import LinkableAttribute
 from veles.json_encoders import NumpyJSONEncoder
 from veles.result_provider import IResultProvider
@@ -91,7 +96,6 @@ class Workflow(Container):
         _run_time: the total time workflow has been running for.
         _method_time: Workflow's method timings measured by method_timed
                       decorator. Used mainly to profile master-slave.
-        fitness: numeric fitness or None (used by genetic optimization).
     """
     hide_from_registry_all = True
     json_encoder = NumpyJSONEncoder
@@ -120,6 +124,7 @@ class Workflow(Container):
         self._stop_ = self.stop
         self.thread_pool.register_on_shutdown(self._stop_)
         self._is_running = False
+        self._restored_from_snapshot_ = None
         self._slave_error_ = False
         self._run_time_started_ = time.time()
         self._sync_event_ = threading.Event()
@@ -270,6 +275,14 @@ class Workflow(Container):
         return self.workflow.workflow is self
 
     @property
+    def restored_from_snapshot(self):
+        if self._restored_from_snapshot_ is None:
+            if self.is_main:
+                return False
+            return Unit.restored_from_snapshot.fget(self)
+        return self._restored_from_snapshot_
+
+    @property
     def result_file(self):
         return self._result_file
 
@@ -287,11 +300,6 @@ class Workflow(Container):
         """Initializes all the units belonging to this Workflow, in dependency
         order.
         """
-        try:
-            snapshot = kwargs["snapshot"]
-        except KeyError:
-            raise from_none(KeyError(
-                "\"snapshot\" (True/False) must be provided in kwargs"))
         units_number = len(self)
         fin_text = "%d units were initialized" % units_number
         maxlen = max([len(u.name) for u in self] + [len(fin_text)])
@@ -323,7 +331,7 @@ class Workflow(Container):
             if partially:
                 iqueue.append(unit)
             else:
-                if snapshot and not unit._remembers_gates:
+                if self.restored_from_snapshot and not unit._remembers_gates:
                     unit.close_gate()
                     unit.close_upstream()
                 progress.inc()
@@ -334,6 +342,7 @@ class Workflow(Container):
             self.warning("Not all units were initialized (%d left): %s",
                          units_number - initialized_units_number,
                          set(self) - set(units_in_dependency_order))
+        self._restored_from_snapshot_ = None
 
     def run(self):
         """Starts executing the workflow. This function is synchronous
@@ -851,3 +860,188 @@ class Workflow(Container):
                 raise
             self._checksum = sha1.hexdigest() + "_%d" % len(self)
         return self._checksum
+
+    def package_export(self, file_name, archive_format="zip", precision=32):
+        """Exports workflow to a package which can be executed by native
+        runtime.
+        """
+        if archive_format not in ("zip", "tgz"):
+            raise ValueError(
+                "Only \"zip\" and \"tgz\" formats are supported (got %s)" %
+                archive_format)
+        if precision not in (16, 32):
+            raise ValueError(
+                "Only 16-bit and 32-bit floats are supported (got %s)" %
+                precision)
+
+        exported = [u for u in self if hasattr(u, "package_export")]
+        if len(exported) == 0:
+            raise ValueError(
+                "No units support export. Implement package_export() method "
+                "in at least one.")
+        obj = {"workflow": self.name,
+               "checksum": self.checksum,
+               "units": [{"class": {"name": unit.__class__.__name__,
+                                    "uuid": unit.__class__.__id__},
+                          "data": unit.package_export()}
+                         for unit in exported]}
+        for ind, unit in enumerate(exported):
+            obj["units"][ind]["links"] = [
+                exported.index(u) for u in unit.derefed_links_to()
+                if u in exported]
+        # check the resulting graph's connectivity
+        fifo = [0]
+        seen = set()
+        while len(fifo) > 0:
+            i = fifo.pop(0)
+            seen.add(i)
+            links = obj["units"][i]["links"]
+            if len(links) == 0 and i < len(exported) - 1:
+                raise VelesException(
+                    "Unit %s is not connected to any other unit" % exported[i])
+            for c in links:
+                if c in seen:
+                    raise VelesException(
+                        "Cycles are not allowed (%s -> %s)" % (
+                            exported[i], exported[c]))
+            fifo.extend(links)
+
+        arrays = []
+
+        def array_file_name(narr, index, json_mode):
+            name = "%04d_%s" % (index, "x".join(map(str, narr.shape)))
+            return "@" + name if json_mode else name + ".npy"
+
+        def export_numpy_array(narr):
+            if isinstance(narr, numpy.ndarray):
+                arrays.append(narr)
+                return array_file_name(narr, len(arrays) - 1, True)
+            raise TypeError("Objects of class other than numpy.ndarray are "
+                            "not supported")
+
+        def print_success():
+            self.info("Successfully exported package to %s", file_name)
+
+        MAIN_FILE_NAME = "contents.json"
+
+        if archive_format == "zip":
+            try:
+                with zipfile.ZipFile(
+                        file_name, mode="w",
+                        compression=zipfile.ZIP_DEFLATED) as azip:
+                    azip.writestr(
+                        MAIN_FILE_NAME,
+                        json.dumps(obj, indent=4, sort_keys=True,
+                                   default=export_numpy_array))
+                    for ind, arr in enumerate(arrays):
+                        io = six.BytesIO()
+                        numpy.save(io, arr.astype("float%d" % precision))
+                        azip.writestr(array_file_name(arr, ind, False),
+                                      io.getvalue())
+            except Exception as e:
+                self.error("Failed to export to %s", file_name)
+                raise from_none(e)
+            else:
+                print_success()
+                return
+
+        assert archive_format == "tgz"
+        try:
+            with tarfile.open(file_name, "w:gz") as tar:
+                io = six.BytesIO()
+                json.dump(obj, getwriter("utf-8")(getattr(io, "buffer", io)),
+                          indent=4, sort_keys=True, default=export_numpy_array)
+                ti = tarfile.TarInfo(MAIN_FILE_NAME)
+                ti.size = io.tell()
+                ti.mode = int("666", 8)
+                io.seek(0)
+                tar.addfile(ti, fileobj=io)
+                for ind, arr in enumerate(arrays):
+                    io = six.BytesIO()
+                    numpy.save(io, arr.astype("float%d" % precision))
+                    ti = tarfile.TarInfo(array_file_name(arr, ind, False))
+                    ti.size = io.tell()
+                    ti.mode = int("666", 8)
+                    io.seek(0)
+                    tar.addfile(ti, fileobj=io)
+        except Exception as e:
+            self.error("Failed to export to %s", file_name)
+            raise from_none(e)
+        else:
+            print_success()
+
+    def change_unit(
+            self, prev_unit_name, new_unit, save_gates=True,
+            units_to_link_to=None, units_to_link_from=None):
+        """
+        Changing one unit to another in already linked Workflow.
+
+        :param prev_unit_name: name of unit, which will be replaced
+        :param new_unit: unit, which will replace old unit
+        :param save_gates: determines whether saving of gates conditions
+        :param units_to_link_to: names of units to link to new unit
+        :param units_to_link_from: names of units to link from new unit
+        :return: unit, which will replace old unit
+        """
+
+        def units_from_none(units):
+            if units is None:
+                units = []
+            return units
+
+        def get_unit_name(unit):
+            if isinstance(unit, weakref.ref):
+                unit = unit()
+
+            # TODO: make sure that week refs will be with correct names
+            # TODO: and remove StartPoint and EndPoint renaming
+            if isinstance(unit, StartPoint):
+                unit_name = self.start_point.name
+            elif isinstance(unit, EndPoint):
+                unit_name = self.end_point.name
+            else:
+                unit_name = unit.name
+            return unit_name
+
+        def get_units_to_link(units_to_link, links):
+            if isinstance(units_to_link, list) and len(units_to_link) == 0:
+                for unit in links:
+                    units_to_link.append(get_unit_name(unit))
+
+        prev_unit = self[prev_unit_name]
+
+        units_to_link_to = units_from_none(units_to_link_to)
+        units_to_link_from = units_from_none(units_to_link_from)
+
+        get_units_to_link(units_to_link_to, prev_unit.links_from)
+        get_units_to_link(units_to_link_from, prev_unit.links_to)
+
+        gate_block = prev_unit.gate_block
+        gate_skip = prev_unit.gate_skip
+        ignores_gate = prev_unit.ignores_gate
+
+        # Unlink previous unit
+        prev_unit.unlink_all()
+
+        # Delete instance of previous unit
+        self.del_ref(prev_unit)
+
+        # Create new unit
+        setattr(self, new_unit.name, new_unit)
+
+        # Control flow link
+        for unit_before in units_to_link_to:
+            new_unit.link_from(self[unit_before])
+        for unit_after in units_to_link_from:
+            self[unit_after].link_from(new_unit)
+
+        # Save Gates
+        if save_gates:
+            new_unit.gate_block = gate_block
+            new_unit.gate_skip = gate_skip
+            new_unit.ignores_gate = ignores_gate
+
+        # Data links
+        # TODO: add data links transmission
+
+        return new_unit

@@ -149,6 +149,8 @@ class Unit(Distributable, Verified):
         self._timings = kwargs.get("timings", timings)
         assert isinstance(self._timings, bool)
         self.workflow = workflow
+        if getattr(workflow, "restored_from_snapshot", False):
+            self._override_restored_from_snapshot_ = False
         self.add_method_to_storage("initialize")
         self.add_method_to_storage("run")
         self.add_method_to_storage("stop")
@@ -418,6 +420,16 @@ class Unit(Distributable, Verified):
         return self.workflow.testing
 
     @property
+    def restored_from_snapshot(self):
+        """
+        :return: Boolean value indicating whether the underlying workflow
+        is restored from a snapshot. This is always False after main workflow's
+        initialization.
+        """
+        return getattr(self, "_override_restored_from_snapshot_",
+                       self.workflow.restored_from_snapshot)
+
+    @property
     def run_was_called(self):
         return self._run_calls > 0
 
@@ -608,6 +620,20 @@ class Unit(Distributable, Verified):
                 with dst._gate_lock_:
                     dst.link_from(last)
         return self
+
+    def derefed_links_to(self):
+        """
+        :return: Sorted units in links_to. Weak references are automatically
+        dereferenced.
+        """
+        return sorted(list(self._iter_links(self.links_to)))
+
+    def derefed_links_from(self):
+        """
+        :return: Sorted units in links_from. Weak references are automatically
+        dereferenced.
+        """
+        return sorted(list(self._iter_links(self.links_from)))
 
     def link_attrs(self, other, *args, **kwargs):
         """
